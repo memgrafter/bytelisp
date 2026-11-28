@@ -96,6 +96,16 @@ python bytelisp.py --v2 'U^^^^0,:x'
 python bytelisp.py --v1 '^^^_:?=x0_vx'
 ```
 
+### Fast batch interpreter (Numba)
+`bytelisp_numba.py` provides a compiled explicit-stack parallel batch executor (`run_batch`, requires `numpy` and `numba`) supporting `version="v1"`, `"v2"`, and `"v3"`. It uses `SplitMix64` for `,` and matches `Machine(..., rng=SplitMix64(seed), version=version)` 1:1 on output bytes, emitted length, step count, max `!` eval depth, stop reason (`halt`, `output`, `steps`, `memory`), and pair allocations:
+
+```python
+import numpy as np
+from bytelisp_numba import run_batch
+
+res = run_batch([",,+xy", "@0?<$^^^^0.^$$_", "^^^0^^0Xxy"], seeds=[1, 1, 1], T=16, version="v3")
+```
+
 ### The language written in itself (v1)
 Two v1 expressions. Each is shown case by case, then as the exact bytes.
 
