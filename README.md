@@ -1,4 +1,4 @@
-# bytelisp: a minimal bracket-free homoiconic Lisp over bytes (specification, reference interpreter, and the language written in itself)
+# bytelisp: a minimal bracket-free homoiconic Lisp over bytes: specification, reference interpreter, and the language written in itself
 
 bytelisp is a prefix-notation, bracket-free, name-free Lisp over bytes. Programs read random bytes and emit bytes. Code is data: quoting a program gives its own bytes, and `!` runs such data. Every byte string over the version's symbols is a valid program.
 
@@ -294,6 +294,10 @@ Notes:
 - Keep `steps` finite in a session that cannot be interrupted. Because emitting costs steps, every call ends.
 - Programs run through `under(...)` recurse deeply in Python; for long ones raise the recursion limit and run in a thread with a large stack (`threading.stack_size`).
 - From the command line: `python bytelisp.py ',,+xy'` prints the row for seed 1 with an output limit of 16 (`--v1`, `--v2`, `--v3` select the version).
+
+## LLM Coding Agent Disclosure
+
+Parts of this work were produced with LLM coding agents.
 
 ---
 
