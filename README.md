@@ -1,17 +1,26 @@
 # bytelisp: a minimal bracket-free homoiconic Lisp over bytes (specification, reference interpreter, and the language written in itself)
 
-bytelisp is a language with 19 one-byte symbols, prefix notation, no brackets and no names. Programs read random bytes and emit bytes. Code is data: quoting a program gives its own bytes, and `!` runs such data. Every byte string over the 19 symbols is a valid program.
+bytelisp is a prefix-notation, bracket-free, name-free Lisp over bytes. Programs read random bytes and emit bytes. Code is data: quoting a program gives its own bytes, and `!` runs such data. Every byte string over the version's symbols is a valid program.
+
+### Versions
+- **v1** (19 symbols + `F`): minimal homoiconic core.
+- **v2** (25 symbols + `F`): v1 + 6 primitives (`<`, `*`, `U`, `H`, `N`, `@`) matching the capabilities of Brainf\*ck + 10 macros† (ordering, scaling, variable-length block buffers, deep indexed history, value repetition, and private non-emitted state).
+- **v3** (28 symbols + `F`): v2 + 3 bitwise and modular primitives (`X`, `%`, `>`) beyond Brainf\*ck + 10 macros†.
+
+Every v1 program is a valid v2 program, and every v2 program is a valid v3 program, with identical semantics.
 
 ### Symbols
+
+#### v1 core (19 symbols)
 | Byte | Value | Arguments | Meaning |
 |---|---|---|---|
 | `_` | 95 | 0 | false, and the empty list; emits nothing |
 | `0` | 48 | 0 | the byte 0 |
 | `,` | 44 | 0 | a fresh random byte from the input; each evaluation draws a new one |
-| `x` | 120 | 0 | the value of the most recent statement that was not `_` |
-| `y` | 121 | 0 | the one before `x` |
-| `z` | 122 | 0 | the one before `y` |
-| `$` | 36 | 0 | the argument given by the enclosing `!` (`_` at the top level) |
+| `x` | 120 | 0 | the value of the most recent statement that was not `_` (`h[0]`) |
+| `y` | 121 | 0 | the one before `x` (`h[1]`) |
+| `z` | 122 | 0 | the one before `y` (`h[2]`) |
+| `$` | 36 | 0 | the argument given by the enclosing `!` or `@` (`_` at the top level) |
 | `:` | 58 | 0 | as a statement: the loop marker; inside an expression: `_` |
 | `^` | 94 | 1 | byte + 1 mod 256 |
 | `v` | 118 | 1 | byte - 1 mod 256 |
@@ -25,171 +34,70 @@ bytelisp is a language with 19 one-byte symbols, prefix notation, no brackets an
 | `=` | 61 | 2 | the byte 1 if both are the same byte or both `_`; otherwise `_` (always `_` if either is a pair) |
 | `?` | 63 | 3 | if the first is not `_`, the second, otherwise the third; only the chosen one is evaluated |
 
+#### v2 extensions (+6 symbols: Brainf\*ck + macros parity)
+| Byte | Value | Arguments | Meaning |
+|---|---|---|---|
+| `<` | 60 | 2 | unsigned byte comparison: `1` if first < second, otherwise `_` |
+| `*` | 42 | 2 | product mod 256 |
+| `U` | 85 | 2 | unfold: evaluate the first argument to count `n`, then evaluate the second argument `n` times and return the list `(v1, (v2, ... (vn, _)))` (`_` if `n = 0`) |
+| `H` | 72 | 1 | indexed history: `h[n]` for byte `n` in `0..255` (`H0` = `x`, `H^0` = `y`, `H^^0` = `z`) |
+| `N` | 78 | 2 | repeat: evaluate both arguments, then build a list of `p` copies of `q` (1 step and 1 pair per copy) |
+| `@` | 64 | 2 | as a top-level statement: stateful loop `@ init trans` (see below); inside an expression: `_` (operands not evaluated) |
+
+#### v3 extensions (+3 symbols: bitwise and modular)
+| Byte | Value | Arguments | Meaning |
+|---|---|---|---|
+| `X` | 88 | 2 | bitwise XOR mod 256 |
+| `%` | 37 | 2 | unsigned modulo (`m % n`, or `0` when `n = 0`) |
+| `>` | 62 | 2 | logical right shift (`m >> n`, or `0` when `n >= 8`) |
+
 `F` (70) ends a program text; what follows it is ignored.
 
 ### Syntax
 A program is a sequence of expressions, called statements. An expression is a symbol followed by as many expressions as it takes arguments. Arguments missing at the end of the text are `_`. There are no spaces, brackets or names, and no syntax errors.
 
 ### Values
-A byte (0 to 255), `_`, or a pair of two values. Only `_` is false; every byte, 0 included, is true. Arithmetic reads `_` and pairs as 0. Arguments are evaluated left to right.
+A byte (0 to 255), `_`, or a pair of two values. Only `_` is false; every byte, 0 included, is true. Arithmetic, counts (`U`, `N`), and history indices (`H`) read `_` and pairs as 0. Arguments are evaluated left to right.
 
 ### Statements and output
-- Statements are evaluated in order. A statement whose value is not `_` is emitted, and its value becomes `x` (the old `x` becomes `y`, the old `y` becomes `z`; all three start as `_`).
+- Statements are evaluated in order. A statement whose value is not `_` is emitted, and its value becomes `x` (shifting `h[0..254]` into `h[1..255]`; all 256 slots start as `_`).
 - Emitting: a byte emits itself; a pair emits its first part, then its second part; `_` emits nothing.
 - `:` as a statement marks a point. At the end of the program, if a marker was passed, at least one statement follows it, and the last evaluated statement's value was not `_`, execution continues after the first marker. Later markers do nothing.
-- Only statements emit. Sub-expressions, and everything evaluated by `!`, are silent. `x`, `y`, `z` are visible everywhere.
+- `@ init trans` (v2+) as a top-level statement evaluates `init` once to get private state `s`, then loops: each iteration takes one step and evaluates `trans` with `$ = s`. If the result is a pair `(s', out)`, state becomes `s'` and if `out` is not `_` then `out` is pushed onto history and emitted (and becomes `last`); if `out` is `_`, the step is silent and the loop continues. When `trans` returns a non-pair, `last` becomes `_` and the `@` loop terminates.
+- Only statements (and non-`_` outputs of `@`) emit. Sub-expressions, and everything evaluated by `!`, are silent. `x`, `y`, `z`, and `H` are visible everywhere.
 
 ### Code as data
-`'` followed by an argument-free symbol gives that symbol's byte value. `'` followed by a symbol with arguments gives the list (byte value, quoted argument, ...), built from pairs and ended by `_`. `!` evaluates such data: a byte that is not an argument-free symbol, or a list whose first part is not a symbol with arguments, evaluates to `_`. A quoted expression is a function of one parameter, `$`; recursion passes the function to itself inside `$`. Numbers come from quoting: `'0` is 48, `A'+__` is 43.
+`'` followed by an argument-free symbol gives that symbol's byte value. `'` followed by a symbol with arguments gives the list (byte value, quoted argument, ...), built from pairs and ended by `_`. `!` evaluates such data: a byte that is not an argument-free symbol, or a list whose first part is not a symbol with arguments in the active version, evaluates to `_`. A quoted expression is a function of one parameter, `$`; recursion passes the function to itself inside `$`. Numbers come from quoting: `'0` is 48, `A'+__` is 43.
 
 ### Limits
-Two limits end a run; neither is an error: an output limit (bytes emitted) and a step budget. One step is one expression evaluated, one statement position visited, or one node visited while emitting (a value can hold no bytes at all and still be large, e.g. `.__:.xx`).
+Three limits can end a run; none is an error: an output limit (bytes emitted), a step budget, and an optional pair-allocation budget (`max_pairs`, counting pairs built by `.`, `U`, and `N`). One step is one expression evaluated, one statement or `@`/`N` loop position visited, or one node visited while emitting (a value can hold no bytes at all and still be large, e.g. `.__:.xx`).
 
-### Examples (one random input sequence)
-| Program | Output | What it does |
-|---|---|---|
-| `,,+xy` | 68 32 100 | two random bytes, then their sum |
-| `:0,,+xy` | 0 68 32 100 0 130 60 190 ... | the same after a 0, repeated until the output limit |
-| `,:+xy` | 68 68 136 204 84 32 116 148 ... | one random byte, then each value is the sum of the two before it |
-| `,!'+$$x` | 68 136 | a random byte, then its double (a quoted expression used as a function) |
-| `^^^_:?=x0_vx` | 3 2 1 0 | counts down from 3 and halts |
-| `'+,,!x_!y,` | 43 44 44 100 57 | emits the code `+,,` as data, then runs it twice |
+### Examples (one random input sequence, `random.Random(1)`)
+| Program | Version | Output | What it does |
+|---|---|---|---|
+| `,,+xy` | v1 | 68 32 100 | two random bytes, then their sum |
+| `:0,,+xy` | v1 | 0 68 32 100 0 130 60 190 ... | the same after a 0, repeated until the output limit |
+| `,:+xy` | v1 | 68 68 136 204 84 32 116 148 ... | one random byte, then each value is the sum of the two before it |
+| `,!'+$$x` | v1 | 68 136 | a random byte, then its double (a quoted expression used as a function) |
+| `^^^_:?=x0_vx` | v1 | 3 2 1 0 | counts down from 3 and halts |
+| `'+,,!x_!y,` | v1 | 43 44 44 100 57 | emits the code `+,,` as data, then runs it twice |
+| `,,?<xyyx` | v2 | 68 32 68 | two random bytes, then their maximum |
+| `U^^^^0,:x` | v2 | 68 32 130 60 68 32 130 60 ... | draws a 4-byte random block and repeats it forever |
+| `@0?<$^^^^0.^$$_` | v2 | 0 1 2 3 | private-state counter `0..3` via `@`, then halts |
+| `^^^0^^0Xxy` | v3 | 3 2 1 | `3`, `2`, then their bitwise XOR (`3 ^ 2 = 1`) |
 
 ### Reference interpreter (Python)
-```python
-import random
+The standalone reference interpreter lives in `bytelisp.py` (standard library only). It supports `version="v1"`, `"v2"`, and `"v3"` (default `"v3"`), Python's `random.Random(seed)` by default, and an optional `SplitMix64(seed)` byte stream.
 
-ARITY = {"_": 0, "0": 0, ",": 0, "x": 0, "y": 0, "z": 0, "$": 0, ":": 0,
-         "^": 1, "v": 1, "A": 1, "D": 1, "'": 1,
-         "+": 2, "-": 2, ".": 2, "!": 2, "=": 2, "?": 3}
-NIL = None                      # false / empty; a pair is a 2-tuple; a byte is an int
-
-
-class Limit(Exception):
-    pass
-
-
-def parse(src):
-    """Program text -> list of statements. An argument-free symbol is its byte; a symbol with
-    arguments is the list (byte, argument, ...) built from pairs. Missing arguments are `_`."""
-    src = src.split("F")[0]
-
-    def expr(i):
-        if i >= len(src):
-            return ord("_"), i
-        c = src[i]
-        i += 1
-        args = []
-        for _ in range(ARITY[c]):
-            a, i = expr(i)
-            args.append(a)
-        if not args:
-            return ord(c), i
-        tail = NIL
-        for a in reversed(args):
-            tail = (a, tail)
-        return (ord(c), tail), i
-
-    out, i = [], 0
-    while i < len(src):
-        e, i = expr(i)
-        out.append(e)
-    return out
-
-
-class Machine:
-    def __init__(self, seed=0, limit=4095, steps=10 ** 6):
-        self.rng, self.limit, self.steps = random.Random(seed), limit, steps
-        self.h = [NIL, NIL, NIL]            # x, y, z
-        self.row = []
-
-    def tick(self):
-        self.steps -= 1
-        if self.steps < 0 or len(self.row) >= self.limit:
-            raise Limit
-
-    @staticmethod
-    def arg(args, i):
-        for _ in range(i):
-            args = args[1] if isinstance(args, tuple) else NIL
-        return args[0] if isinstance(args, tuple) else NIL
-
-    def ev(self, t, a):
-        """Value of expression t (data) with argument a."""
-        self.tick()
-        if not isinstance(t, tuple):
-            c = chr(t) if isinstance(t, int) else ""
-            if c == "0": return 0
-            if c == ",": return self.rng.randrange(256)
-            if c and c in "xyz": return self.h["xyz".index(c)]
-            if c == "$": return a
-            return NIL
-        head, args = t
-        c = chr(head) if isinstance(head, int) else ""
-        if ARITY.get(c, 0) == 0:
-            return NIL
-        if c == "'":
-            return self.arg(args, 0)
-        if c == "?":
-            return self.ev(self.arg(args, 1 if self.ev(self.arg(args, 0), a) is not NIL else 2), a)
-        p = self.ev(self.arg(args, 0), a)
-        if c in "^vAD":
-            n = p if isinstance(p, int) else 0
-            if c == "^": return (n + 1) % 256
-            if c == "v": return (n - 1) % 256
-            if c == "A": return p[0] if isinstance(p, tuple) else NIL
-            return p[1] if isinstance(p, tuple) else NIL
-        q = self.ev(self.arg(args, 1), a)
-        if c == ".": return (p, q)
-        if c == "!": return self.ev(p, q)
-        if c == "=":
-            return 1 if not isinstance(p, tuple) and not isinstance(q, tuple) and p == q else NIL
-        m, n = (p if isinstance(p, int) else 0), (q if isinstance(q, int) else 0)
-        return (m + n) % 256 if c == "+" else (m - n) % 256
-
-    def emit(self, v):
-        stack = [v]
-        while stack:
-            self.tick()                     # emitting costs steps: a value may hold no bytes at all
-            x = stack.pop()
-            if isinstance(x, int):
-                self.row.append(x)
-            elif isinstance(x, tuple):
-                stack += [x[1], x[0]]
-
-    def run(self, src):
-        prog, i, start, last = parse(src), 0, None, NIL
-        try:
-            while True:
-                self.tick()
-                if i >= len(prog):
-                    if start is None or start >= len(prog) or last is NIL:
-                        break
-                    i = start
-                    continue
-                t = prog[i]
-                i += 1
-                if t == ord(":"):
-                    if start is None:
-                        start = i
-                    continue
-                last = self.ev(t, NIL)
-                if last is not NIL:
-                    self.h = [last] + self.h[:2]
-                    self.emit(last)
-        except Limit:
-            pass
-        return self.row[:self.limit]
-
-
-if __name__ == "__main__":
-    import sys
-    sys.setrecursionlimit(100000)
-    print(Machine(seed=1, limit=16).run(sys.argv[1]))
+From the command line:
+```bash
+python bytelisp.py ',,+xy'
+python bytelisp.py --v2 'U^^^^0,:x'
+python bytelisp.py --v1 '^^^_:?=x0_vx'
 ```
 
-### The language written in itself
-Two expressions. Each is shown case by case, then as the exact bytes.
+### The language written in itself (v1)
+Two v1 expressions. Each is shown case by case, then as the exact bytes.
 
 **`EV`** evaluates one expression. Its `$` is the list (expression, EV, argument, h1, h2, h3); h1 to h3 are the `x`, `y`, `z` of the interpreted program.
 
@@ -293,11 +201,11 @@ To run a program s1 s2 ... under it, one statement: `!'` RUN `.` P `.'` RUN `.'`
 ### Checks
 Done with the reference interpreter above, the same random input on both sides:
 - `,,+xy`, `,!'+$$x`, `^^^_:?=x0_vx`, `'+,,!x_!y,`: the output under `RUN` equals the direct output.
-- 6,000 random byte strings of length 1 to 12 over the 19 symbols: 319 skipped (no halt within 3,000 steps, or 200 bytes emitted); the other 5,681 give the same output directly and under `RUN`.
+- 6,000 random byte strings of length 1 to 12 over the 19 v1 symbols: 319 skipped (no halt within 3,000 steps, or 200 bytes emitted); the other 5,681 give the same output directly and under `RUN`.
 - `,,+xy` under `RUN` is 838 bytes; under `RUN` running `RUN`, 1,667 bytes; all three give 68 32 100.
 
 ### Appendix: using it from a Python REPL
-Save the reference interpreter above as `bytelisp.py`. Then, in any Python session started in the same folder (a plain `python`, a notebook, or a persistent REPL kernel such as replmux), paste:
+In any Python session started in the repo folder:
 
 ```python
 import sys
@@ -306,17 +214,17 @@ from bytelisp import Machine, parse
 sys.setrecursionlimit(100000)
 
 
-def run(program, seed=1, limit=16, steps=10**6):
+def run(program, seed=1, limit=16, steps=10**6, version="v3"):
     """The row a program emits (a list of bytes)."""
-    return Machine(seed, limit, steps).run(program)
+    return Machine(seed, limit, steps, version=version).run(program)
 
 
-def value(expression, argument=None, seed=1):
+def value(expression, argument=None, seed=1, version="v3"):
     """The value of one expression: an int, None for `_`, or a (first, second) tuple."""
-    return Machine(seed).ev(parse(expression)[0], argument)
+    return Machine(seed, version=version).ev(parse(expression, version=version)[0], argument)
 
 
-def statements(program):
+def statements(program, version="v3"):
     """The program split into its statements, missing arguments written out as `_`."""
     def text(t):
         if not isinstance(t, tuple):
@@ -326,7 +234,7 @@ def statements(program):
             s += text(a[0])
             a = a[1]
         return s
-    return [text(t) for t in parse(program)]
+    return [text(t) for t in parse(program, version=version)]
 
 
 EV = (
@@ -348,8 +256,8 @@ RUN = (
 
 
 def under(program):
-    """The one-statement program that runs `program` under the runner written in the language."""
-    return ("!'" + RUN + "." + "".join(".'" + s for s in statements(program)) + "_.'" + RUN
+    """The one-statement program that runs `program` under the v1 runner written in the language."""
+    return ("!'" + RUN + "." + "".join(".'" + s for s in statements(program, version="v1")) + "_.'" + RUN
             + ".'" + EV + "._._._._.__")
 ```
 
@@ -360,15 +268,23 @@ Then:
 | `run(",,+xy")` | `[68, 32, 100]` |
 | `run(",,+xy", seed=2)` | `[28, 46, 74]` |
 | `run(":0,,+xy")` | `[0, 68, 32, 100, 0, 130, 60, 190, 0, 253, 230, 227, 0, 241, 194, 179]` (cut at `limit=16`) |
+| `run(",,?<xyyx", version="v2")` | `[68, 32, 68]` |
+| `run("U^^^^0,:x", limit=8, version="v2")` | `[68, 32, 130, 60, 68, 32, 130, 60]` |
+| `run("@0?<$^^^^0.^$$_", version="v2")` | `[0, 1, 2, 3]` |
+| `run("^^^0^^0Xxy", version="v3")` | `[3, 2, 1]` |
 | `value("+^0^^0")` | `3` |
 | `value("!'+$$^^0")` | `4` |
 | `value("'+,,")` | `(43, (44, (44, None)))` |
 | `statements("^^^_:?=x0_vx")` | `['^^^_', ':', '?=x0_vx']` |
-| `run(under(",,+xy"), steps=10**7)` | `[68, 32, 100]` (`under(",,+xy")` is 838 bytes) |
+| `run(under(",,+xy"), steps=10**7, version="v1")` | `[68, 32, 100]` (`under(",,+xy")` is 838 bytes) |
 
 Notes:
-- `seed` fixes the random input, `limit` is the output limit in bytes, `steps` the step budget. A run that reaches a limit returns what it has emitted.
-- The results above are for Python's `random.Random(seed)`; another source of random bytes gives other inputs and the same relations between them.
+- `seed` fixes the random input, `limit` is the output limit in bytes, `steps` the step budget, `max_pairs` an optional pair-allocation budget. A run that reaches a limit returns what it has emitted.
+- The results above are for Python's `random.Random(seed)`; passing `rng=SplitMix64(seed)` selects the splitmix64 byte stream.
 - Keep `steps` finite in a session that cannot be interrupted. Because emitting costs steps, every call ends.
 - Programs run through `under(...)` recurse deeply in Python; for long ones raise the recursion limit and run in a thread with a large stack (`threading.stack_size`).
-- From the command line: `python bytelisp.py ',,+xy'` prints the row for seed 1 with an output limit of 16.
+- From the command line: `python bytelisp.py ',,+xy'` prints the row for seed 1 with an output limit of 16 (`--v1`, `--v2`, `--v3` select the version).
+
+---
+
+† Aditya Cowsik, Kfir Dolev, Michael Y. Li, G. Bruno De Luca, Nourya Cohen, Noah D. Goodman, and Yoav Levine, *"Self-Play Pretraining with Zero Data"* (2026), [arXiv:2609.30063](https://arxiv.org/abs/2609.30063), Appendix E (Brainf\*ck with 10 textual macros).
